@@ -755,6 +755,109 @@ write_hotkeys_js() {
 
   setInterval(syncQuickCallBtn, 500);
 
+  // "📱 FaceTime" button — appears alongside the Dialer.io "Call from ..."
+  // and our "Call" button when a contact number is loaded. Opens the
+  // currently-loaded number via the macOS facetime-audio:// URL scheme
+  // (Chrome prompts to open FaceTime; checking "Always allow" skips the
+  // prompt on future clicks).
+  //
+  // Sky-blue so it's visually distinct from the green Call and purple
+  // Call-from buttons.
+  const FACETIME_BTN_ID = "__facetime_btn";
+  const FACETIME_BLUE = "#0ea5e9";
+  const FACETIME_BLUE_HOVER = "#0284c7";
+
+  async function doFaceTime() {
+    let phoneNumber;
+    try {
+      phoneNumber = await sendCommand("dialer:query-contact-phone-number");
+    } catch (err) {
+      console.warn("[hotkeys] facetime: query phone failed", err);
+      return;
+    }
+    if (!phoneNumber) {
+      alert("No contact phone number is loaded.");
+      return;
+    }
+    const url = "facetime-audio://" + encodeURIComponent(phoneNumber);
+    try {
+      // Open in a background tab so the popup/current tab aren't disturbed;
+      // the OS handler takes over almost immediately. Close the stub tab
+      // once FaceTime has had a chance to launch.
+      chrome.tabs.create({ url, active: false }, (tab) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[hotkeys] facetime tab create failed:", chrome.runtime.lastError);
+          return;
+        }
+        if (tab && tab.id) {
+          setTimeout(() => {
+            try { chrome.tabs.remove(tab.id); } catch (_) {}
+          }, 1500);
+        }
+      });
+      console.log("[hotkeys] facetime audio →", phoneNumber);
+    } catch (err) {
+      console.warn("[hotkeys] facetime failed:", err);
+      alert("Could not launch FaceTime: " + (err.message || err));
+    }
+  }
+
+  function syncFaceTimeBtn() {
+    const callFromText = findByText("^call from");
+    const anchor = callFromText
+      ? callFromText.closest('button, [role="button"]') || callFromText
+      : null;
+    const existing = document.getElementById(FACETIME_BTN_ID);
+    if (!anchor) {
+      if (existing) existing.remove();
+      return;
+    }
+    // Place it after our quick-call button if that's present; otherwise
+    // directly after the Call from button.
+    const quickCall = document.getElementById(QUICK_CALL_BTN_ID);
+    const insertAfter = quickCall || anchor;
+    const parent = insertAfter.parentNode;
+    if (!parent) return;
+    if (existing && existing.parentNode === parent) return;
+    if (existing) existing.remove();
+
+    const btn = document.createElement("button");
+    btn.id = FACETIME_BTN_ID;
+    btn.type = "button";
+    btn.textContent = "\uD83D\uDCF1 FaceTime";
+    btn.title = "Open the loaded number in FaceTime Audio (macOS).";
+    btn.style.cssText =
+      "background:" + FACETIME_BLUE + " !important;" +
+      "color:#fff !important;border:none !important;" +
+      "border-radius:12px !important;" +
+      "padding:12px 24px !important;" +
+      "font-size:16px !important;font-weight:600 !important;" +
+      "cursor:pointer !important;" +
+      "display:inline-flex !important;align-items:center !important;" +
+      "gap:8px !important;line-height:1.2 !important;" +
+      "margin-left:8px !important;" +
+      "box-shadow:0 2px 6px rgba(0,0,0,0.25) !important;" +
+      "transition:background 100ms !important;";
+    btn.addEventListener("mouseenter", () =>
+      btn.style.setProperty("background", FACETIME_BLUE_HOVER, "important")
+    );
+    btn.addEventListener("mouseleave", () =>
+      btn.style.setProperty("background", FACETIME_BLUE, "important")
+    );
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      doFaceTime();
+    });
+    if (insertAfter.nextSibling) {
+      parent.insertBefore(btn, insertAfter.nextSibling);
+    } else {
+      parent.appendChild(btn);
+    }
+  }
+
+  setInterval(syncFaceTimeBtn, 500);
+
   // Keep the dialed number in the dialer after a disposition is set, so
   // you can see what you just called (and redial it) without re-loading
   // the contact. The dialer normally clears it on DispositionCall; this
