@@ -750,7 +750,7 @@ patch_interceptor_autodial() {
   [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
 
   perl -i -0777 -pe '
-    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);try{let __k=await $1(\x60dialer:query-preferred-call-origin\x60);if(!__k){let __l=await $1(\x60dialer:query-call-origins\x60);__k=Array.isArray(__l)\&\&__l.length?__l[0]:null}if(__k)await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__k,contactPhoneNumber:$3})}catch(__e){}await $1($4.FocusUI)/g
+    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);try{let __l=await $1(\x60dialer:query-call-origins\x60);if(!Array.isArray(__l))__l=[];let __us=$3.startsWith("+1")||$3.startsWith("+61");let __wc=__us?"US":"GB";let __k=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode===__wc);if(!__k)__k=await $1(\x60dialer:query-preferred-call-origin\x60);if(!__k\&\&__l.length)__k=__l[0];if(__k){try{await $1(\x60dialer:set-preferred-call-origin\x60,__k.callerId.phoneNumber)}catch(__){}await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__k,contactPhoneNumber:$3})}}catch(__e){}await $1($4.FocusUI)/g
   ' "$file"
 
   if grep -q 'workspace:initiate-outbound-call' "$file"; then
