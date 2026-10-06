@@ -597,6 +597,118 @@ write_hotkeys_js() {
   // settings UI (another tab, another device).
   setInterval(refreshFromPill, 10000);
 
+  // "⚡ Call Now" button — appears whenever the dialer's own "Call from ..."
+  // button is on screen (i.e., a contact number is loaded and ready to dial).
+  // Clicking it skips the "Call from" picker entirely: queries the loaded
+  // contact number, picks the country-matched caller ID (US for +1/+61,
+  // UK otherwise, with fallback to the other if the first errors out), and
+  // fires workspace:initiate-outbound-call directly.
+  const QUICK_CALL_BTN_ID = "__quick_call_btn";
+
+  async function doQuickCall() {
+    const btn = document.getElementById(QUICK_CALL_BTN_ID);
+    if (btn) { btn.disabled = true; btn.style.opacity = "0.6"; }
+    try {
+      let phoneNumber;
+      try {
+        phoneNumber = await sendCommand("dialer:query-contact-phone-number");
+      } catch (err) {
+        console.warn("[hotkeys] quick call: query phone failed", err);
+        return;
+      }
+      if (!phoneNumber) {
+        alert("No contact phone number is loaded to call.");
+        return;
+      }
+      let origins = [];
+      try {
+        const r = await sendCommand("dialer:query-call-origins");
+        if (Array.isArray(r)) origins = r;
+      } catch (err) {
+        console.warn("[hotkeys] quick call: query origins failed", err);
+      }
+      const useUs = phoneNumber.startsWith("+1") || phoneNumber.startsWith("+61");
+      const want = useUs ? "US" : "GB";
+      const primary = origins.find((o) => o && o.callerId && o.callerId.countryCode === want);
+      const fallback = origins.find((o) => o && o.callerId && o.callerId.countryCode !== want);
+      const order = [];
+      for (const x of [primary, fallback]) if (x && !order.includes(x)) order.push(x);
+      if (order.length === 0) {
+        try {
+          const pref = await sendCommand("dialer:query-preferred-call-origin");
+          if (pref) order.push(pref);
+        } catch (_) {}
+        if (order.length === 0 && origins.length) order.push(origins[0]);
+      }
+
+      let placed = false;
+      let lastErr = null;
+      for (const cand of order) {
+        try {
+          try {
+            await sendCommand("dialer:set-preferred-call-origin", cand.callerId.phoneNumber);
+          } catch (_) {}
+          await sendCommand("workspace:initiate-outbound-call", {
+            callOrigin: cand,
+            contactPhoneNumber: phoneNumber,
+          });
+          placed = true;
+          console.log("[hotkeys] quick call placed via", cand.callerId.phoneNumber, "->", phoneNumber);
+          break;
+        } catch (err) {
+          lastErr = err;
+          console.warn("[hotkeys] quick call via", cand.callerId && cand.callerId.phoneNumber, "failed:", err);
+        }
+      }
+      if (!placed) {
+        const msg = lastErr && (lastErr.message || String(lastErr));
+        alert("Dialer.io could not place a call to " + phoneNumber + (msg ? "\n\n" + msg : ""));
+      }
+    } finally {
+      const btn2 = document.getElementById(QUICK_CALL_BTN_ID);
+      if (btn2) { btn2.disabled = false; btn2.style.opacity = "1"; }
+    }
+  }
+
+  function syncQuickCallBtn() {
+    const callFromBtn = findByText("^call from");
+    const existing = document.getElementById(QUICK_CALL_BTN_ID);
+    if (!callFromBtn) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    if (!document.body) return;
+
+    const btn = document.createElement("button");
+    btn.id = QUICK_CALL_BTN_ID;
+    btn.type = "button";
+    btn.textContent = "⚡ Call Now";
+    btn.title =
+      "Dial immediately using the country-matched caller ID " +
+      "(US for +1/+61, UK otherwise). Bypasses the 'Call from' picker.";
+    btn.style.cssText =
+      "position:fixed;top:68px;left:50%;transform:translateX(-50%);" +
+      "z-index:2147483645;" +
+      "background:#2563eb;color:#fff;border:none;border-radius:8px;" +
+      "padding:10px 22px;font-size:14px;font-weight:700;cursor:pointer;" +
+      "box-shadow:0 6px 16px rgba(0,0,0,0.35);line-height:1.2;" +
+      "transition:transform 100ms,background 100ms;";
+    btn.addEventListener("mouseenter", () => (btn.style.background = "#1d4ed8"));
+    btn.addEventListener("mouseleave", () => (btn.style.background = "#2563eb"));
+    btn.addEventListener("mousedown", () => (btn.style.transform = "translateX(-50%) scale(0.97)"));
+    btn.addEventListener("mouseup", () => (btn.style.transform = "translateX(-50%)"));
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      doQuickCall();
+    });
+    document.body.appendChild(btn);
+  }
+
+  setInterval(syncQuickCallBtn, 500);
+
+
   // Reach into the user's active HubSpot tab and click the "Call with device"
   // phone icon (the receiver icon that appears next to the Phone Number
   // field on hover). Combined with the interceptor auto-dial patch, this
