@@ -672,43 +672,122 @@ write_hotkeys_js() {
     }
   }
 
+  // Visually distinct helpers for the two buttons:
+  //   • Dialer.io's own "Call from ..." button — we recolor it PURPLE
+  //     (same violet as our Hangup-Intro dispo button) so users can tell
+  //     at a glance that it's the slow path (opens the caller-ID picker).
+  //   • Our injected "Call" button — GREEN, styled to match the dialer's
+  //     original call-button appearance, sits right next to "Call from...".
+  //     Clicking it skips the picker and dials via the country-matched
+  //     caller ID directly.
+  const QUICK_CALL_GREEN = "#22c55e";
+  const QUICK_CALL_GREEN_HOVER = "#16a34a";
+  const CALL_FROM_PURPLE = "#7c3aed";
+
   function syncQuickCallBtn() {
-    const callFromBtn = findByText("^call from");
+    const callFromText = findByText("^call from");
+    const anchor = callFromText
+      ? callFromText.closest('button, [role="button"]') || callFromText
+      : null;
     const existing = document.getElementById(QUICK_CALL_BTN_ID);
-    if (!callFromBtn) {
+
+    if (!anchor) {
       if (existing) existing.remove();
       return;
     }
-    if (existing) return;
-    if (!document.body) return;
+
+    // Recolor the dialer's own "Call from..." button to purple. React may
+    // overwrite inline styles on re-render, which is why this runs on the
+    // same 500ms poll as the injection.
+    anchor.style.setProperty("background", CALL_FROM_PURPLE, "important");
+    anchor.style.setProperty("background-color", CALL_FROM_PURPLE, "important");
+    anchor.style.setProperty("background-image", "none", "important");
+
+    // Only re-inject our button when it's missing OR its parent changed
+    // (React may have moved the surrounding row).
+    if (existing && existing.parentNode === anchor.parentNode) return;
+    if (existing) existing.remove();
+
+    const parent = anchor.parentNode;
+    if (!parent) return;
 
     const btn = document.createElement("button");
     btn.id = QUICK_CALL_BTN_ID;
     btn.type = "button";
-    btn.textContent = "⚡ Call Now";
+    btn.textContent = "☎ Call";
     btn.title =
-      "Dial immediately using the country-matched caller ID " +
-      "(US for +1/+61, UK otherwise). Bypasses the 'Call from' picker.";
-    btn.style.cssText =
-      "position:fixed;top:68px;left:50%;transform:translateX(-50%);" +
-      "z-index:2147483645;" +
-      "background:#2563eb;color:#fff;border:none;border-radius:8px;" +
-      "padding:10px 22px;font-size:14px;font-weight:700;cursor:pointer;" +
-      "box-shadow:0 6px 16px rgba(0,0,0,0.35);line-height:1.2;" +
-      "transition:transform 100ms,background 100ms;";
-    btn.addEventListener("mouseenter", () => (btn.style.background = "#1d4ed8"));
-    btn.addEventListener("mouseleave", () => (btn.style.background = "#2563eb"));
-    btn.addEventListener("mousedown", () => (btn.style.transform = "translateX(-50%) scale(0.97)"));
-    btn.addEventListener("mouseup", () => (btn.style.transform = "translateX(-50%)"));
+      "Dial immediately with the country-matched caller ID " +
+      "(US for +1/+61, UK otherwise). Skips the Call from picker.";
+    const base =
+      "background:" + QUICK_CALL_GREEN + " !important;" +
+      "color:#fff !important;border:none !important;" +
+      "border-radius:12px !important;" +
+      "padding:12px 24px !important;" +
+      "font-size:16px !important;font-weight:600 !important;" +
+      "cursor:pointer !important;" +
+      "display:inline-flex !important;align-items:center !important;" +
+      "gap:8px !important;line-height:1.2 !important;" +
+      "margin-left:8px !important;" +
+      "box-shadow:0 2px 6px rgba(0,0,0,0.25) !important;" +
+      "transition:background 100ms !important;";
+    btn.style.cssText = base;
+    btn.addEventListener("mouseenter", () =>
+      btn.style.setProperty("background", QUICK_CALL_GREEN_HOVER, "important")
+    );
+    btn.addEventListener("mouseleave", () =>
+      btn.style.setProperty("background", QUICK_CALL_GREEN, "important")
+    );
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       doQuickCall();
     });
-    document.body.appendChild(btn);
+
+    // Insert immediately AFTER the Call from button so they sit side by
+    // side (the picker is slow path on the left/original, our quick call
+    // is the fast path on the right).
+    if (anchor.nextSibling) {
+      parent.insertBefore(btn, anchor.nextSibling);
+    } else {
+      parent.appendChild(btn);
+    }
   }
 
   setInterval(syncQuickCallBtn, 500);
+
+  // Keep the dialed number in the dialer after a disposition is set, so
+  // you can see what you just called (and redial it) without re-loading
+  // the contact. The dialer normally clears it on DispositionCall; this
+  // polls dialer:query-contact-phone-number and re-sets the number via
+  // dialer:set-contact-phone-number the moment it transitions from a
+  // real value to null. If you intentionally clear the field via the UI
+  // and want to type a new number, just type over it — the restore only
+  // fires once per clear, not continuously.
+  let __lastDialedPhone = null;
+  let __lastSeenPhone = null;
+  async function persistPhoneNumber() {
+    let current;
+    try {
+      current = await sendCommand("dialer:query-contact-phone-number");
+    } catch (err) {
+      return;
+    }
+    if (current) {
+      __lastDialedPhone = current;
+      __lastSeenPhone = current;
+      return;
+    }
+    if (__lastDialedPhone && __lastSeenPhone !== null) {
+      __lastSeenPhone = null;
+      try {
+        await sendCommand("dialer:set-contact-phone-number", __lastDialedPhone);
+        console.log("[hotkeys] restored contact number after clear:", __lastDialedPhone);
+      } catch (err) {
+        console.warn("[hotkeys] restore failed:", err);
+      }
+    }
+  }
+  setInterval(persistPhoneNumber, 500);
 
 
   // Reach into the user's active HubSpot tab and click the "Call with device"
