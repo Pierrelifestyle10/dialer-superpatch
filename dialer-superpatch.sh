@@ -64,10 +64,11 @@ enumerate_targets() {
 find_interceptor_bundle() {
   # Filename hash rotates across releases (interceptor.ts-<hash>.js), so
   # match by content: the real bundle references SetContactPhoneNumber.
-  # Exclude the loader shim.
+  # Exclude the loader shim. `|| true` on both greps so a no-match doesn't
+  # abort the script under set -e / pipefail.
   local ext_dir="$1"
-  grep -l 'SetContactPhoneNumber' "$ext_dir"/assets/interceptor.ts-*.js 2>/dev/null \
-    | grep -v -- '-loader-' \
+  { grep -l 'SetContactPhoneNumber' "$ext_dir"/assets/interceptor.ts-*.js 2>/dev/null || true; } \
+    | { grep -v -- '-loader-' || true; } \
     | head -n1
 }
 
@@ -80,9 +81,10 @@ find_popup_html() {
 find_offscreen_bundle() {
   # Filename hash rotates across releases (offscreen-<hash>.js). Match by
   # content: the offscreen bundle references Twilio Device construction
-  # (`new o(t,r)` in this build's minified form).
+  # (`new o(t,r)` in this build's minified form). `|| true` keeps a no-match
+  # grep from killing the script under set -e / pipefail.
   local ext_dir="$1"
-  grep -l 'new o(t,r)' "$ext_dir"/assets/offscreen-*.js 2>/dev/null | head -n1
+  { grep -l 'new o(t,r)' "$ext_dir"/assets/offscreen-*.js 2>/dev/null || true; } | head -n1
 }
 
 # --- hotkeys.js payload (dropped into the extension root) ------------------
