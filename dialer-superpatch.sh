@@ -251,6 +251,7 @@ write_hotkeys_js() {
   // In-call disposition buttons. Left-to-right in this array = left-to-right
   // on screen. Colors chosen for at-a-glance meaning; edit as you like.
   const DISPO_BUTTONS = [
+    { label: "No Contact",                   match: "^no contact$",                             bg: "#334155" }, // dark slate — nobody answered
     { label: "F - Offer And Accept",         match: "^f\\s*-\\s*offer and accept$",             bg: "#16a34a" }, // green — win
     { label: "Schedule Callback",            match: "^schedule callback$",                      bg: "#2563eb" }, // blue — followup
     { label: "DQ - DNC",                     match: "^dq\\s*-\\s*dnc$",                         bg: "#7f1d1d" }, // dark red — do-not-contact
@@ -329,6 +330,74 @@ write_hotkeys_js() {
   }
 
   setInterval(syncDispoRow, 500);
+
+  // Idle auto-disposition.
+  //
+  // Once a call ends, the dialer waits for a disposition and will sit on that
+  // contact forever. If nothing is picked within IDLE_DISPO_MS of continuous
+  // inactivity, set IDLE_DISPO_LABEL automatically.
+  //
+  // "Idle" means the awaiting-disposition state is on screen AND the popup has
+  // seen no click, keypress or scroll in that window. Any interaction restarts
+  // the clock, and an open disposition menu holds it off entirely, so nobody
+  // gets the dispo yanked out from under them mid-decision.
+  //
+  // Set IDLE_DISPO_MS to 0 to turn this off.
+  const IDLE_DISPO_MS = 60000;
+  const IDLE_DISPO_LABEL = "No Disposition";
+  const IDLE_DISPO_MATCH = "^no disposition$";
+
+  let idleSince = null;   // start of the current idle stretch, null when not waiting
+  let idleFired = false;  // one auto-fire per awaiting-disposition episode
+
+  const bumpIdle = () => {
+    if (idleSince !== null) idleSince = Date.now();
+  };
+  for (const evt of ["click", "keydown", "mousedown", "wheel"]) {
+    document.addEventListener(evt, bumpIdle, true);
+  }
+
+  // Same state test syncDispoRow uses: a Set Disposition control on screen with
+  // no hangup button means the call is over and nothing has been set yet.
+  function awaitingDisposition() {
+    if (findByAria("hang|end call|^end$|hangup")) return false;
+    return !!findByText("set disposition|^disposition$");
+  }
+
+  function checkIdleDisposition() {
+    if (!IDLE_DISPO_MS) return;
+
+    if (!awaitingDisposition()) {
+      idleSince = null;
+      idleFired = false;
+      return;
+    }
+    // A disposition flow is already running — don't stack another.
+    if (dispoFlowRunning) {
+      idleSince = Date.now();
+      return;
+    }
+    // Menu already open: someone is mid-decision. Hold the clock.
+    if (document.querySelector('input[placeholder*="Search" i], input[type="search"]')) {
+      idleSince = Date.now();
+      return;
+    }
+    if (idleSince === null) {
+      idleSince = Date.now();
+      return;
+    }
+    if (idleFired) return;
+    if (Date.now() - idleSince < IDLE_DISPO_MS) return;
+
+    idleFired = true;
+    console.log(
+      "[hotkeys] idle " + Math.round(IDLE_DISPO_MS / 1000) +
+        "s with no disposition → setting " + IDLE_DISPO_LABEL
+    );
+    dispositionFlow(IDLE_DISPO_MATCH, IDLE_DISPO_LABEL);
+  }
+
+  setInterval(checkIdleDisposition, 1000);
 
   // Fixed-position Reload button in the bottom-right corner of the popup.
   // Calling chrome.runtime.reload() restarts the whole extension (service
@@ -789,6 +858,311 @@ write_hotkeys_js() {
   }
   setInterval(persistPhoneNumber, 500);
 
+  // HubSpot contact-name banner.
+  //
+  // The dialer only ever receives a phone number, so the popup can't say who
+  // is being called. This watches the loaded contact number and, when it
+  // changes, reaches into the active HubSpot tab to find the name that sits
+  // with that number on the page, then renders it directly above the number
+  // in the popup.
+  //
+  // Both halves are heuristic — HubSpot's DOM has no stable public hooks — so
+  // every step logs, and a miss leaves the popup exactly as it was.
+  const NAME_BANNER_ID = "__hs_name_banner";
+  const nameCache = new Map(); // last-10-digits -> full name (or "" for a miss)
+  let bannerName = null;
+  let bannerNumber = null;
+  let nameLookupInFlight = false;
+
+  const digitsKey = (s) => (s || "").replace(/\D/g, "").slice(-10);
+
+  // Runs inside the HubSpot page. Given the last 10 digits of the number being
+  // dialed, return the contact's full name.
+  function scrapeHubSpotName(key) {
+    const digits = (s) => (s || "").replace(/\D/g, "");
+    const looksLikeName = (s) => {
+      const t = (s || "").replace(/\s+/g, " ").trim();
+      if (t.length < 2 || t.length > 60) return false;
+      if (!/[a-z]/i.test(t)) return false;            // needs letters
+      if (/\d{4,}/.test(t)) return false;             // not a number blob
+      if (/@/.test(t)) return false;                  // not an email
+      return true;
+    };
+
+    // 1. Row/card that holds this number: find the element showing the number,
+    //    walk up to its row, then take the contact link in that row.
+    const nodes = [...document.querySelectorAll("td, [role='cell'], [role='gridcell'], a, span, div")];
+    for (const el of nodes) {
+      const own = el.textContent || "";
+      if (own.length > 400) continue;
+      if (!digits(own).endsWith(key)) continue;
+      const row = el.closest("tr, [role='row'], [data-selenium-test='table-row'], li");
+      if (!row) continue;
+      const link = row.querySelector("a[href*='/contact/'], a[href*='/record/0-1/']");
+      if (link && looksLikeName(link.textContent)) {
+        return link.textContent.replace(/\s+/g, " ").trim();
+      }
+    }
+
+    // 2. Contact record page: the big name at the top of the left panel.
+    const headerSelectors = [
+      "[data-test-id='highlight-title']",
+      "[data-selenium-test='highlight-title']",
+      "[data-test-id='profile-name']",
+      "h1",
+    ];
+    for (const sel of headerSelectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (looksLikeName(t)) return t;
+      }
+    }
+
+    // 3. Tab title, which on a record page starts with the contact's name.
+    const title = (document.title || "").split("|")[0].replace(/\s+/g, " ").trim();
+    if (looksLikeName(title) && !/^hubspot$/i.test(title)) return title;
+
+    return null;
+  }
+
+  async function lookupHubSpotName(number) {
+    const key = digitsKey(number);
+    if (key.length < 7) return null;
+    if (nameCache.has(key)) return nameCache.get(key) || null;
+
+    let tab;
+    try {
+      const win = await chrome.windows.getLastFocused({
+        populate: true,
+        windowTypes: ["normal"],
+      });
+      tab = win?.tabs?.find((t) => t.active);
+    } catch (err) {
+      console.warn("[hotkeys] name lookup: getLastFocused failed:", err);
+      return null;
+    }
+    if (!tab?.id || !/\.hubspot\.com$/.test(new URL(tab.url || "about:blank").hostname)) {
+      console.log("[hotkeys] name lookup: active tab isn't HubSpot — skipping");
+      return null;
+    }
+
+    let results;
+    try {
+      results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        args: [key],
+        func: scrapeHubSpotName,
+      });
+    } catch (err) {
+      console.warn("[hotkeys] name lookup: executeScript failed:", err);
+      return null;
+    }
+    const name = results.map((r) => r?.result).find(Boolean) || null;
+    // Cache misses too, so a failed scrape doesn't re-inject every poll.
+    nameCache.set(key, name || "");
+    console.log("[hotkeys] name lookup:", number, "->", name || "(not found)");
+    return name;
+  }
+
+  // The element in the popup that displays the dialed number. Smallest visible
+  // node whose digits match, so we anchor to the number itself rather than a
+  // wrapper.
+  function findNumberElement(number) {
+    const key = digitsKey(number);
+    if (!key) return null;
+    const re = new RegExp("\\d");
+    const candidates = [...document.querySelectorAll("span, div, p, h1, h2, h3, input")].filter((el) => {
+      if (el.closest("#" + NAME_BANNER_ID)) return false;
+      if (!visible(el)) return false;
+      const text = el.tagName === "INPUT" ? el.value : el.textContent;
+      if (!text || text.length > 60 || !re.test(text)) return false;
+      return (text.replace(/\D/g, "") || "").endsWith(key);
+    });
+    // Deepest match wins — the shallowest ones are containers.
+    return candidates.length
+      ? candidates.reduce((a, b) => (b.contains(a) ? a : b))
+      : null;
+  }
+
+  function syncNameBanner() {
+    const existing = document.getElementById(NAME_BANNER_ID);
+
+    if (!bannerName || !bannerNumber) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const numEl = findNumberElement(bannerNumber);
+    if (!numEl) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const anchor = numEl.tagName === "INPUT" ? numEl : numEl;
+    const parent = anchor.parentElement;
+    if (!parent) return;
+
+    // Already mounted in the right place with the right text.
+    if (existing && existing.nextElementSibling === anchor && existing.textContent === bannerName) {
+      return;
+    }
+    if (existing) existing.remove();
+
+    const banner = document.createElement("div");
+    banner.id = NAME_BANNER_ID;
+    banner.textContent = bannerName;
+    banner.style.cssText =
+      "width:100%;text-align:center;color:#fff;font-size:15px;font-weight:700;" +
+      "line-height:1.25;margin:0 0 2px 0;text-shadow:0 1px 2px rgba(0,0,0,0.6);" +
+      "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    parent.insertBefore(banner, anchor);
+  }
+
+  // Watch the loaded number; look the name up once per number.
+  async function trackContactName() {
+    let current;
+    try {
+      current = await sendCommand("dialer:query-contact-phone-number");
+    } catch (err) {
+      return;
+    }
+    if (!current) {
+      bannerName = null;
+      bannerNumber = null;
+      return;
+    }
+    if (current === bannerNumber) return;
+
+    bannerNumber = current;
+    bannerName = null;
+    if (nameLookupInFlight) return;
+    nameLookupInFlight = true;
+    try {
+      const name = await lookupHubSpotName(current);
+      // The number may have changed again while we were looking.
+      if (bannerNumber === current) bannerName = name;
+    } finally {
+      nameLookupInFlight = false;
+    }
+  }
+
+  setInterval(trackContactName, 700);
+  setInterval(syncNameBanner, 500);
+
+  // Dial-over-a-live-call: switch to the new contact.
+  //
+  // Clicking a number in HubSpot while a call is up sets the contact number
+  // and asks the dialer to place a call, which it won't do with a line
+  // already open. This watches for that: the loaded number changing while a
+  // call is live means a dial was requested for someone else, so hang up,
+  // disposition the old call as SWITCH_DISPO_LABEL, then place the new call.
+  //
+  // Deliberately conservative. If a call is somehow still live after the
+  // disposition — e.g. the dialer switched calls on its own — the new call is
+  // NOT placed, because the alternative is dialing the same person twice.
+  const SWITCH_DISPO_MATCH = "^no contact$";
+  const SWITCH_DISPO_LABEL = "No Contact";
+  const SWITCH_TEARDOWN_MS = 600;
+
+  let switchRunning = false;
+  let switchLastNumber = null;
+
+  const callIsLive = () => !!findByAria("hang|end call|^end$|hangup");
+
+  // Caller-ID choice, same rule as the ☎ Call button: country-matched first
+  // (US for +1/+61, UK otherwise), then the other one, then the preferred.
+  async function originsFor(phoneNumber) {
+    let list = [];
+    try {
+      const r = await sendCommand("dialer:query-call-origins");
+      if (Array.isArray(r)) list = r;
+    } catch (err) {
+      console.warn("[hotkeys] switch: query origins failed", err);
+    }
+    const useUs = phoneNumber.startsWith("+1") || phoneNumber.startsWith("+61");
+    const want = useUs ? "US" : "GB";
+    const primary = list.find((o) => o && o.callerId && o.callerId.countryCode === want);
+    const fallback = list.find((o) => o && o.callerId && o.callerId.countryCode !== want);
+    const order = [];
+    for (const x of [primary, fallback]) if (x && !order.includes(x)) order.push(x);
+    if (order.length === 0) {
+      try {
+        const pref = await sendCommand("dialer:query-preferred-call-origin");
+        if (pref) order.push(pref);
+      } catch (_) {}
+      if (order.length === 0 && list.length) order.push(list[0]);
+    }
+    return order;
+  }
+
+  async function initiateCall(phoneNumber) {
+    for (const cand of await originsFor(phoneNumber)) {
+      try {
+        try {
+          await sendCommand("dialer:set-preferred-call-origin", cand.callerId.phoneNumber);
+        } catch (_) {}
+        await sendCommand("workspace:initiate-outbound-call", {
+          callOrigin: cand,
+          contactPhoneNumber: phoneNumber,
+        });
+        console.log("[hotkeys] switch: call placed to", phoneNumber, "via", cand.callerId.phoneNumber);
+        return true;
+      } catch (err) {
+        console.warn("[hotkeys] switch: dial via", cand.callerId && cand.callerId.phoneNumber, "failed:", err);
+      }
+    }
+    console.warn("[hotkeys] switch: could not place the call to", phoneNumber);
+    return false;
+  }
+
+  async function switchToNumber(next) {
+    switchRunning = true;
+    console.log(
+      "[hotkeys] dial requested during a live call → hang up, dispo " +
+        SWITCH_DISPO_LABEL + ", then call " + next
+    );
+    try {
+      await dispositionFlow(SWITCH_DISPO_MATCH, SWITCH_DISPO_LABEL);
+      await sleep(SWITCH_TEARDOWN_MS);
+
+      if (callIsLive()) {
+        console.warn("[hotkeys] switch: a call is still live after the dispo — not dialing again");
+        return;
+      }
+      // The dispo may have cleared the field; make sure the dialer holds the
+      // number we actually want before initiating.
+      try {
+        await sendCommand("dialer:set-contact-phone-number", next);
+      } catch (_) {}
+      await initiateCall(next);
+    } finally {
+      switchRunning = false;
+    }
+  }
+
+  async function watchForDialOverCall() {
+    if (switchRunning || dispoFlowRunning) return;
+
+    let current;
+    try {
+      current = await sendCommand("dialer:query-contact-phone-number");
+    } catch (err) {
+      return;
+    }
+    if (!current) return;                       // nothing loaded; leave the baseline alone
+    if (switchLastNumber === null) {            // first reading is the baseline, never a switch
+      switchLastNumber = current;
+      return;
+    }
+    if (current === switchLastNumber) return;
+
+    switchLastNumber = current;                 // set before switching, so this can't re-trigger
+    if (!callIsLive()) return;                  // no call up — the normal dial path handles it
+    switchToNumber(current);
+  }
+
+  setInterval(watchForDialOverCall, 400);
+
 
   // Reach into the user's active HubSpot tab and click the "Call with device"
   // phone icon (the receiver icon that appears next to the Phone Number
@@ -943,7 +1317,7 @@ patch_interceptor_autodial() {
   [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
 
   perl -i -0777 -pe '
-    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);try{let __l=await $1(\x60dialer:query-call-origins\x60);if(!Array.isArray(__l))__l=[];let __us=$3.startsWith("+1")||$3.startsWith("+61");let __wc=__us?"US":"GB";let __p=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode===__wc);let __f=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode!==__wc);let __q=[];for(let __x of [__p,__f])if(__x\&\&!__q.includes(__x))__q.push(__x);if(__q.length===0){let __pr=await $1(\x60dialer:query-preferred-call-origin\x60);if(__pr)__q.push(__pr);else if(__l.length)__q.push(__l[0])}let __ok=false,__le=null;for(let __c of __q){try{try{await $1(\x60dialer:set-preferred-call-origin\x60,__c.callerId.phoneNumber)}catch(_){}await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__c,contactPhoneNumber:$3});__ok=true;break}catch(__er){__le=__er}}if(!__ok\&\&__le)throw __le}catch(__e){throw __e}await $1($4.FocusUI)/g
+    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);if(location.hostname==="hubspot.com"||location.hostname.endsWith(".hubspot.com")){try{let __l=await $1(\x60dialer:query-call-origins\x60);if(!Array.isArray(__l))__l=[];let __us=$3.startsWith("+1")||$3.startsWith("+61");let __wc=__us?"US":"GB";let __p=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode===__wc);let __f=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode!==__wc);let __q=[];for(let __x of [__p,__f])if(__x\&\&!__q.includes(__x))__q.push(__x);if(__q.length===0){let __pr=await $1(\x60dialer:query-preferred-call-origin\x60);if(__pr)__q.push(__pr);else if(__l.length)__q.push(__l[0])}let __ok=false,__le=null;for(let __c of __q){try{try{await $1(\x60dialer:set-preferred-call-origin\x60,__c.callerId.phoneNumber)}catch(_){}await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__c,contactPhoneNumber:$3});__ok=true;break}catch(__er){__le=__er}}if(!__ok\&\&__le)throw __le}catch(__e){throw __e}}await $1($4.FocusUI)/g
   ' "$file"
 
   if grep -q 'workspace:initiate-outbound-call' "$file"; then
@@ -1014,6 +1388,113 @@ revert_interceptor() {
   fi
 }
 
+find_sw_bundle() {
+  # Service-worker bundle; filename hash rotates (index.ts-<hash>.js), so match
+  # by content: it's the one that reads getManifest().content_scripts.
+  local ext_dir="$1"
+  { grep -l 'content_scripts??\[\]' "$ext_dir"/assets/*.js 2>/dev/null || true; } | head -n1
+}
+
+patch_sw_tabfilter() {
+  # On startup the service worker injects every manifest content script into
+  # EVERY open tab, ignoring the script's own match patterns. That bypasses
+  # patch_manifest_matches: an already-open WhatsApp Web tab still got the
+  # interceptor pushed into it. Filter that tab list to HubSpot. New tabs are
+  # unaffected — they go through the (HubSpot-only) manifest registration.
+  local file="$1"
+  if [[ -z "$file" ]]; then
+    warn "  service-worker bundle: not found (skipping tab filter)"
+    return 0
+  fi
+  if grep -q '__t\.url' "$file"; then
+    log "  service worker: tab injection already filtered to HubSpot"
+    return 0
+  fi
+  [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
+
+  perl -i -0777 -pe '
+    s#\Qfor(let n of await ae())\E#for(let n of (await ae()).filter(__t=>{try{let __h=new URL(__t.url||"").hostname;return __h==="hubspot.com"||__h.endsWith(".hubspot.com")}catch(_){return false}}))#
+  ' "$file"
+
+  if grep -q '__t\.url' "$file"; then
+    log "  service worker: tab injection filtered to HubSpot"
+  else
+    warn "  ERROR: tab-injection loop not found in $file — restoring backup"
+    mv "$file.superpatch.bak" "$file"
+    return 1
+  fi
+}
+
+revert_sw() {
+  local file="$1"
+  if [[ -n "$file" ]] && [[ -f "$file.superpatch.bak" ]]; then
+    mv "$file.superpatch.bak" "$file"
+    log "  service-worker bundle reverted"
+  fi
+}
+
+patch_manifest_command() {
+  # Dialer.io ships no keyboard command, so the popup can only be summoned by
+  # clicking the toolbar icon. Its action has no default_popup — the icon fires
+  # action.onClicked, which focuses the existing popup window or creates one —
+  # so Chrome's reserved _execute_action command runs exactly that handler.
+  # The key still has to be accepted/assigned at chrome://extensions/shortcuts.
+  local manifest="$1"
+  if grep -q '_execute_action' "$manifest"; then
+    log "  manifest: popup shortcut already present"
+    return 0
+  fi
+  [[ -f "$manifest.superpatch.bak" ]] || cp "$manifest" "$manifest.superpatch.bak"
+
+  perl -i -0777 -pe '
+    s#(   "content_scripts": \[)#   "commands": {\n      "_execute_action": {\n         "suggested_key": {\n            "default": "Ctrl+Shift+D",\n            "mac": "MacCtrl+Alt+D"\n         }\n      }\n   },\n$1#
+  ' "$manifest"
+
+  if grep -q '_execute_action' "$manifest"; then
+    log "  manifest: popup shortcut added (Ctrl+Option+D on macOS)"
+  else
+    warn "  ERROR: content_scripts key not found in $manifest — restoring backup"
+    mv "$manifest.superpatch.bak" "$manifest"
+    return 1
+  fi
+}
+
+patch_manifest_matches() {
+  # Dialer.io registers its interceptor content script for <all_urls>, so it
+  # claims phone numbers on EVERY site — clicking one on WhatsApp Web pulled up
+  # the dialer with the number loaded. Restrict the content script to HubSpot
+  # so other sites are left completely alone. Add more match patterns here if
+  # you want click-to-dial somewhere else.
+  local manifest="$1"
+  if grep -q 'hubspot\.com/\*' "$manifest"; then
+    log "  manifest: interceptor already restricted to HubSpot"
+    return 0
+  fi
+  [[ -f "$manifest.superpatch.bak" ]] || cp "$manifest" "$manifest.superpatch.bak"
+
+  # Anchored on the "run_at" that follows, so this only touches the
+  # content_scripts block and leaves web_accessible_resources alone.
+  perl -i -0777 -pe '
+    s{("matches":\s*\[\s*)"[^"]*all_urls>"(\s*\],\s*\n\s*"run_at")}{$1"https://*.hubspot.com/*", "https://hubspot.com/*"$2}
+  ' "$manifest"
+
+  if grep -q 'hubspot\.com/\*' "$manifest"; then
+    log "  manifest: interceptor restricted to HubSpot"
+  else
+    warn "  ERROR: content_scripts matches pattern not found in $manifest — restoring backup"
+    mv "$manifest.superpatch.bak" "$manifest"
+    return 1
+  fi
+}
+
+revert_manifest() {
+  local manifest="$1"
+  if [[ -f "$manifest.superpatch.bak" ]]; then
+    mv "$manifest.superpatch.bak" "$manifest"
+    log "  manifest reverted"
+  fi
+}
+
 patch_offscreen_silence() {
   # Silence the Twilio SDK's default "disconnect" beep that plays at the end
   # of every call. Wraps each Twilio Device construction in an IIFE that
@@ -1059,11 +1540,12 @@ main() {
     is_dialer "$manifest" || continue
 
     hits=$((hits + 1))
-    local ext_dir bundle html offscreen
+    local ext_dir bundle html offscreen sw
     ext_dir="$(dirname "$manifest")"
     bundle="$(find_interceptor_bundle "$ext_dir")"
     html="$(find_popup_html "$ext_dir")"
     offscreen="$(find_offscreen_bundle "$ext_dir")"
+    sw="$(find_sw_bundle "$ext_dir")"
 
     log "Dialer.io: $ext_dir"
 
@@ -1080,6 +1562,15 @@ main() {
 
         install_hotkeys_js         "$ext_dir"
         wire_hotkeys_into_popup    "$html"    || failed=$((failed + 1))
+        # Phone-number clicks are HUBSPOT-ONLY (2026-10-15), two layers:
+        #   patch_manifest_matches  — the interceptor doesn't even load on other
+        #                             sites, so a click there does nothing at all.
+        #   patch_interceptor_autodial — on HubSpot, a click dials immediately;
+        #                             the hostname gate inside keeps it that way
+        #                             if the content script ever runs elsewhere.
+        patch_manifest_matches     "$manifest" || failed=$((failed + 1))
+        patch_manifest_command     "$manifest" || failed=$((failed + 1))
+        patch_sw_tabfilter         "$sw"      || failed=$((failed + 1))
         patch_interceptor_autodial "$bundle"  || failed=$((failed + 1))
         patch_interceptor_hotkey   "$bundle"  || failed=$((failed + 1))
         patch_offscreen_silence    "$offscreen" || failed=$((failed + 1))
@@ -1090,6 +1581,8 @@ main() {
         [[ -n "$html"     ]] && revert_popup_wiring "$html"
         [[ -n "$bundle"   ]] && revert_interceptor  "$bundle"
         [[ -n "$offscreen" ]] && revert_offscreen   "$offscreen"
+        [[ -n "$sw"       ]] && revert_sw           "$sw"
+        revert_manifest   "$manifest"
         revert_hotkeys_js "$ext_dir"
         done=$((done + 1))
         ;;
