@@ -329,7 +329,7 @@ write_hotkeys_js() {
     controlRow.parentElement.insertBefore(buildDispoRow(), controlRow);
   }
 
-  setInterval(syncDispoRow, 500);
+  setInterval(syncDispoRow, 1500);
 
   // Idle auto-disposition.
   //
@@ -432,7 +432,7 @@ write_hotkeys_js() {
     });
     document.body.appendChild(btn);
   }
-  setInterval(ensureReloadButton, 1000);
+  setInterval(ensureReloadButton, 2000);
 
   // "From: <number>" picker in the bottom-left corner of the popup.
   // Reads the agent's available caller IDs via dialer:query-call-origins and
@@ -639,7 +639,7 @@ write_hotkeys_js() {
     refreshFromPill();
   }
 
-  setInterval(ensureFromPill, 1000);
+  setInterval(ensureFromPill, 2000);
 
   // Custom background image for the popup. Data-URL so it stays
   // self-contained in hotkeys.js (and in the shareable superpatch
@@ -662,7 +662,7 @@ write_hotkeys_js() {
       "}";
     document.head.appendChild(style);
   }
-  setInterval(ensureBackground, 1000);
+  setInterval(ensureBackground, 3000);
 
   // Periodic refresh so the pill tracks changes made in the dialer's own
   // settings UI (another tab, another device).
@@ -822,7 +822,7 @@ write_hotkeys_js() {
     }
   }
 
-  setInterval(syncQuickCallBtn, 500);
+  setInterval(syncQuickCallBtn, 1500);
 
   // Keep the dialed number in the dialer after a disposition is set, so
   // you can see what you just called (and redial it) without re-loading
@@ -856,7 +856,7 @@ write_hotkeys_js() {
       }
     }
   }
-  setInterval(persistPhoneNumber, 500);
+  setInterval(persistPhoneNumber, 1500);
 
   // HubSpot contact-name banner.
   //
@@ -1046,8 +1046,8 @@ write_hotkeys_js() {
     }
   }
 
-  setInterval(trackContactName, 700);
-  setInterval(syncNameBanner, 500);
+  setInterval(trackContactName, 1500);
+  setInterval(syncNameBanner, 1500);
 
   // Dial-over-a-live-call: switch to the new contact.
   //
@@ -1142,6 +1142,9 @@ write_hotkeys_js() {
 
   async function watchForDialOverCall() {
     if (switchRunning || dispoFlowRunning) return;
+    // No call live? Then there is nothing to switch away from — skip the poll
+    // entirely. Keeps the service-worker console quiet when the user is idle.
+    if (!callIsLive()) { switchLastNumber = null; return; }
 
     let current;
     try {
@@ -1154,14 +1157,22 @@ write_hotkeys_js() {
       switchLastNumber = current;
       return;
     }
-    if (current === switchLastNumber) return;
+    // Normalize to trailing digits — same person in a different format
+    // (+1555… vs 555…) must not read as a switch.
+    const digits = (s) => (s || "").replace(/\D/g, "").slice(-10);
+    if (digits(current) === digits(switchLastNumber)) {
+      switchLastNumber = current; // keep the latest format as the baseline
+      return;
+    }
 
+    const prev = switchLastNumber;
     switchLastNumber = current;                 // set before switching, so this can't re-trigger
     if (!callIsLive()) return;                  // no call up — the normal dial path handles it
+    console.log("[hotkeys] dial-over detected: was", prev, "now", current);
     switchToNumber(current);
   }
 
-  setInterval(watchForDialOverCall, 400);
+  // setInterval(watchForDialOverCall, 400); // disabled: false-fired when a call connected
 
 
   // Reach into the user's active HubSpot tab and click the "Call with device"
@@ -1317,7 +1328,7 @@ patch_interceptor_autodial() {
   [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
 
   perl -i -0777 -pe '
-    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);if(location.hostname==="hubspot.com"||location.hostname.endsWith(".hubspot.com")){try{let __l=await $1(\x60dialer:query-call-origins\x60);if(!Array.isArray(__l))__l=[];let __us=$3.startsWith("+1")||$3.startsWith("+61");let __wc=__us?"US":"GB";let __p=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode===__wc);let __f=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode!==__wc);let __q=[];for(let __x of [__p,__f])if(__x\&\&!__q.includes(__x))__q.push(__x);if(__q.length===0){let __pr=await $1(\x60dialer:query-preferred-call-origin\x60);if(__pr)__q.push(__pr);else if(__l.length)__q.push(__l[0])}let __ok=false,__le=null;for(let __c of __q){try{try{await $1(\x60dialer:set-preferred-call-origin\x60,__c.callerId.phoneNumber)}catch(_){}await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__c,contactPhoneNumber:$3});__ok=true;break}catch(__er){__le=__er}}if(!__ok\&\&__le)throw __le}catch(__e){throw __e}}await $1($4.FocusUI)/g
+    s/await\s+(\w+)\(\s*(\w+)\.SetContactPhoneNumber\s*,\s*(\w+)\s*\)\s*,\s*await\s+\1\(\s*(\w+)\.FocusUI\s*\)/await $1($2.SetContactPhoneNumber,$3);if(location.hostname==="hubspot.com"||location.hostname.endsWith(".hubspot.com")){try{let __l=await $1(\x60dialer:query-call-origins\x60);if(!Array.isArray(__l))__l=[];let __us=$3.startsWith("+1")||$3.startsWith("+61");let __wc=__us?"US":"GB";let __p=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode===__wc);let __f=__l.find(__o=>__o\&\&__o.callerId\&\&__o.callerId.countryCode!==__wc);let __q=[];for(let __x of [__p,__f])if(__x\&\&!__q.includes(__x))__q.push(__x);if(__q.length===0){let __pr=await $1(\x60dialer:query-preferred-call-origin\x60);if(__pr)__q.push(__pr);else if(__l.length)__q.push(__l[0])}let __ok=false,__le=null;for(let __c of __q){try{try{await $1(\x60dialer:set-preferred-call-origin\x60,__c.callerId.phoneNumber)}catch(_){}await $1(\x60workspace:initiate-outbound-call\x60,{callOrigin:__c,contactPhoneNumber:$3});__ok=true;break}catch(__er){__le=__er}}if(!__ok\&\&__le)throw __le}catch(__e){throw __e}}/g
   ' "$file"
 
   if grep -q 'workspace:initiate-outbound-call' "$file"; then
@@ -1380,11 +1391,598 @@ patch_interceptor_cellclick() {
   fi
 }
 
+patch_interceptor_hslog() {
+  # Instant HubSpot call logging. Dialer.io's own sync takes 1-3 minutes to
+  # post a call engagement; this writes a placeholder the moment a dial starts
+  # and removes it once Dialer's real record (with the recording) lands. The
+  # API calls live here because they authenticate off the HubSpot session
+  # cookie plus csrf.app, which only exist on a hubspot.com page.
+  local file="$1"
+  if [[ -z "$file" ]]; then
+    warn "  interceptor bundle: not found (skipping instant HubSpot logging)"
+    return 0
+  fi
+  if grep -q 'superpatch-pending-call' "$file"; then
+    log "  interceptor: instant HubSpot logging already installed"
+    return 0
+  fi
+  [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
+  printf '\n' >> "$file"
+  cat >> "$file" <<'SP_HSLOG_EOF'
+// superpatch: instant HubSpot call logging. Dialer.io's own sync takes 1-3
+// minutes to post a call engagement, so we write a lightweight placeholder the
+// moment a dial starts and remove it once Dialer's real record (which carries
+// the recording and duration) shows up. Runs here rather than in the service
+// worker because these endpoints authenticate off the HubSpot session cookie
+// plus the csrf.app token, both of which only exist on a hubspot.com page.
+;(() => {
+  try {
+    const h = location.hostname;
+    if (!(h === "hubspot.com" || h.endsWith(".hubspot.com"))) return;
+  } catch (_) { return; }
+
+  const CALL_TYPE_ID = "0-48";
+  const ASSOC_CALL_TO_CONTACT = 194;
+  const MARKER = "superpatch-pending-call";
+
+  function cookie(name) {
+    const m = document.cookie.match(new RegExp("(^|;\\s*)" + name.replace(/\./g, "\\.") + "=([^;]*)"));
+    return m ? decodeURIComponent(m[2]) : null;
+  }
+
+  function recordIds() {
+    const m = /\/contacts\/(\d+)\/record\/0-1\/(\d+)/.exec(location.pathname);
+    return m ? { portalId: Number(m[1]), contactId: Number(m[2]) } : null;
+  }
+
+  function headers() {
+    return {
+      "content-type": "application/json",
+      Accept: "application/json",
+      "X-HubSpot-CSRF-hubspotapi": cookie("csrf.app") || "",
+    };
+  }
+
+  // Whoever is signed in owns the placeholder, so each rep's instant log shows
+  // under their own name rather than whoever's id happened to be baked in.
+  let ownerIdPromise = null;
+  function ownerId(portalId) {
+    if (!ownerIdPromise) {
+      ownerIdPromise = fetch("/login-verify/hub-user-info?portalId=" + portalId, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          const id = j && j.user && j.user.user_id;
+          return id ? String(id) : null;
+        })
+        .catch(() => null);
+    }
+    return ownerIdPromise;
+  }
+
+  async function createPlaceholder(number) {
+    const ids = recordIds();
+    if (!ids) return { ok: false, error: "not on a contact record" };
+    const owner = await ownerId(ids.portalId);
+    const now = Date.now();
+    const body = {
+      engagementCreateObject: {
+        objectTypeId: CALL_TYPE_ID,
+        properties: [
+          { name: "hs_timestamp", value: String(now) },
+          { name: "hs_engagement_source", value: "CRM_UI" },
+          ...(owner ? [{ name: "hubspot_owner_id", value: owner }] : []),
+          { name: "hs_call_body", value: "Dialing " + (number || "") + " — " + MARKER },
+          { name: "hs_call_status", value: "COMPLETED" },
+          { name: "hs_call_direction", value: "OUTBOUND" },
+        ],
+        associations: [
+          {
+            associationSpec: { associationCategory: "HUBSPOT_DEFINED", associationTypeId: ASSOC_CALL_TO_CONTACT },
+            objectIds: [ids.contactId],
+          },
+        ],
+      },
+      originObjectCoordinates: { portalId: ids.portalId, objectTypeId: "0-1", objectId: ids.contactId },
+    };
+    const res = await fetch(
+      "/api/chirp-frontend-app/v1/gateway/com.hubspot.crm.events.rpc.EngagementsRpc/createEngagement?portalId=" +
+        ids.portalId + "&clienttimeout=5000",
+      { method: "POST", credentials: "include", headers: headers(), body: JSON.stringify(body) }
+    );
+    const text = await res.text();
+    if (!res.ok) return { ok: false, status: res.status, error: text.slice(0, 200) };
+    let id = null;
+    try {
+      const j = JSON.parse(text);
+      id = (j.data && j.data.object && j.data.object.objectId) || null;
+    } catch (_) {}
+    return { ok: true, engagementId: id, contactId: ids.contactId, portalId: ids.portalId, at: now };
+  }
+
+  // True once a CALL engagement that isn't ours exists at or after `since`.
+  async function dialerCallLanded(contactId, portalId, placeholderId, since) {
+    const res = await fetch(
+      "/api/engagements/v1/engagements/associated/contact/" + contactId + "/paged?limit=30&portalId=" + portalId,
+      { credentials: "include", headers: headers() }
+    );
+    if (!res.ok) return { ok: false, status: res.status };
+    const j = await res.json();
+    const landed = (j.results || []).some((r) => {
+      const e = r.engagement || {};
+      if (e.type !== "CALL") return false;
+      if (String(e.id) === String(placeholderId)) return false;
+      return Number(e.timestamp || 0) >= since - 120000;
+    });
+    return { ok: true, landed };
+  }
+
+  // portalId comes from the stored pending entry, not the current URL — by the
+  // time a placeholder is swept the rep has usually navigated elsewhere.
+  async function removePlaceholder(engagementId, portalId) {
+    if (!portalId) {
+      const ids = recordIds();
+      portalId = (ids && ids.portalId) || "";
+    }
+    const res = await fetch(
+      "/api/engagements/v1/engagements/" + engagementId + "?portalId=" + portalId + "&clienttimeout=14000",
+      { method: "DELETE", credentials: "include", headers: headers() }
+    );
+    return { ok: res.ok, status: res.status };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+    if (!msg || typeof msg !== "object") return;
+    if (msg.superpatchHsLog) {
+      createPlaceholder(msg.superpatchHsLog.number).then(respond, (e) => respond({ ok: false, error: String(e) }));
+      return true;
+    }
+    if (msg.superpatchHsCheck) {
+      const c = msg.superpatchHsCheck;
+      dialerCallLanded(c.contactId, c.portalId, c.engagementId, c.at).then(respond, (e) => respond({ ok: false, error: String(e) }));
+      return true;
+    }
+    if (msg.superpatchHsDelete) {
+      const d = msg.superpatchHsDelete;
+      removePlaceholder(d.engagementId, d.portalId).then(respond, (e) => respond({ ok: false, error: String(e) }));
+      return true;
+    }
+  });
+})();
+SP_HSLOG_EOF
+  log "  interceptor: instant HubSpot logging installed"
+}
+
+patch_sw_hslog() {
+  # Service-worker half of the instant HubSpot logging: notices a dial, asks
+  # the content script to write the placeholder, then sweeps until Dialer's
+  # own record shows up and removes it. Depends on patch_bus_invoker having
+  # exposed the handler map.
+  local file="$1"
+  if [[ -z "$file" ]]; then
+    warn "  service-worker bundle: not found (skipping instant HubSpot logging)"
+    return 0
+  fi
+  if grep -q 'superpatch_hs_pending_v1' "$file"; then
+    log "  service worker: instant HubSpot logging already installed"
+    return 0
+  fi
+  [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
+  printf '\n' >> "$file"
+  cat >> "$file" <<'SP_SWHSLOG_EOF'
+// superpatch: drive the instant-HubSpot-log placeholder from the dial path.
+// The actual API calls live in the HubSpot content script (it has the session
+// cookie and csrf token); this side decides when to fire and when to clean up.
+;(() => {
+  const log = (...a) => console.log("[superpatch-hslog]", ...a);
+  const warn = (...a) => console.warn("[superpatch-hslog]", ...a);
+  const PENDING_KEY = "superpatch_hs_pending_v1";
+  const ALARM = "superpatch-hslog-sweep";
+  const CHECK_MS = 20000;
+  const GIVE_UP_MS = 6 * 60 * 1000;
+  // Dialer's own record never lands sooner than this, so checking earlier is
+  // pure wasted traffic. With a heavy dial pace the pending list is what drives
+  // request volume, so both of these matter.
+  const MIN_AGE_MS = 45000;
+  const MAX_CHECKS_PER_SWEEP = 8;
+
+  async function hubspotTabId() {
+    try {
+      const tabs = await chrome.tabs.query({ url: "https://*.hubspot.com/*" });
+      if (!tabs || !tabs.length) return null;
+      return (tabs.find((t) => t.active) || tabs[tabs.length - 1]).id;
+    } catch (_) { return null; }
+  }
+
+  async function ask(payload) {
+    const tabId = await hubspotTabId();
+    if (!tabId) return { ok: false, error: "no hubspot tab" };
+    try {
+      return await chrome.tabs.sendMessage(tabId, payload);
+    } catch (err) { return { ok: false, error: String(err) }; }
+  }
+
+  // Mirrors the dedupe guard's window: a suppressed duplicate dial never
+  // reaches the dialer, so it must not leave a placeholder behind either.
+  let lastLogged = { number: null, at: 0 };
+
+  async function logDial(number) {
+    const now = Date.now();
+    if (number === lastLogged.number && now - lastLogged.at < 6000) return;
+    lastLogged = { number, at: now };
+    const r = await ask({ superpatchHsLog: { number } });
+    if (!r || !r.ok) { warn("placeholder not created:", r && r.error); return null; }
+    if (!r.engagementId) { warn("placeholder created but no id returned — cannot clean it up later"); return null; }
+    const entry = { engagementId: r.engagementId, contactId: r.contactId, portalId: r.portalId, at: r.at };
+    const store = await chrome.storage.local.get([PENDING_KEY]);
+    const pending = store[PENDING_KEY] || [];
+    pending.push(entry);
+    await chrome.storage.local.set({ [PENDING_KEY]: pending });
+    log("placeholder", r.engagementId, "logged for", number);
+    return entry;
+  }
+
+  // The dial failed after the placeholder went in, so take it back out.
+  async function rollback(entry) {
+    await ask({ superpatchHsDelete: { engagementId: entry.engagementId, portalId: entry.portalId } });
+    const store = await chrome.storage.local.get([PENDING_KEY]);
+    const pending = (store[PENDING_KEY] || []).filter((p) => String(p.engagementId) !== String(entry.engagementId));
+    await chrome.storage.local.set({ [PENDING_KEY]: pending });
+    log("dial failed — rolled back placeholder", entry.engagementId);
+  }
+
+  async function sweep() {
+    const store = await chrome.storage.local.get([PENDING_KEY]);
+    const pending = store[PENDING_KEY] || [];
+    if (!pending.length) return;
+    const keep = [];
+    let checks = 0;
+    for (const p of pending) {
+      const age = Date.now() - p.at;
+      if (age > GIVE_UP_MS) {
+        warn("dialer record never arrived for", p.engagementId, "— leaving the placeholder in place");
+        continue;
+      }
+      if (age < MIN_AGE_MS || checks >= MAX_CHECKS_PER_SWEEP) { keep.push(p); continue; }
+      checks++;
+      const c = await ask({ superpatchHsCheck: p });
+      if (!c || !c.ok) { keep.push(p); continue; }
+      if (!c.landed) { keep.push(p); continue; }
+      const d = await ask({ superpatchHsDelete: { engagementId: p.engagementId, portalId: p.portalId } });
+      if (d && d.ok) log("dialer record landed — removed placeholder", p.engagementId);
+      else { warn("could not remove placeholder", p.engagementId, d && d.status); keep.push(p); }
+    }
+    await chrome.storage.local.set({ [PENDING_KEY]: keep });
+  }
+
+  const handlers = globalThis.__sp_handlers;
+  if (handlers && typeof handlers.get === "function") {
+    const key = "workspace:initiate-outbound-call";
+    const original = handlers.get(key);
+    if (original && !original.__spHsLogged) {
+      const wrapped = async (input) => {
+        // Fire the placeholder before waiting on the dial itself — waiting adds
+        // a second or more to how fast the rep sees it in HubSpot. If the dial
+        // then fails, the placeholder is rolled back.
+        const number = input && input.contactPhoneNumber;
+        const logged = number ? logDial(number).catch((e) => { warn("log failed:", e); return null; }) : null;
+        try {
+          return await original(input);
+        } catch (err) {
+          if (logged) logged.then((p) => p && rollback(p)).catch(() => {});
+          throw err;
+        }
+      };
+      wrapped.__spHsLogged = true;
+      // Preserve the dedupe guard's own flag so it is not re-wrapped later.
+      if (original.__spDeduped) wrapped.__spDeduped = true;
+      handlers.set(key, wrapped);
+      log("instant HubSpot call logging active");
+    }
+  } else {
+    warn("handler map not exposed — instant HubSpot logging NOT active");
+  }
+
+  // setInterval dies with the service worker (MV3 sleeps it after ~30s idle),
+  // so an alarm carries the sweep across those gaps. One minute is the floor
+  // chrome.alarms allows.
+  const safeSweep = () => sweep().catch((e) => warn("sweep failed:", e));
+  setInterval(safeSweep, CHECK_MS);
+  chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener((a) => { if (a.name === ALARM) safeSweep(); });
+})();
+SP_SWHSLOG_EOF
+  log "  service worker: instant HubSpot logging installed"
+}
+
 revert_interceptor() {
   local file="$1"
   if [[ -f "$file.superpatch.bak" ]]; then
     mv "$file.superpatch.bak" "$file"
     log "  interceptor reverted"
+  fi
+}
+
+find_commandbus_bundle() {
+  # Command-bus module; filename hash rotates. Match by content: it's the one
+  # holding the handler map and the sendMessage envelope.
+  local ext_dir="$1"
+  { grep -l 'command:{key' "$ext_dir"/assets/commandbus-*.js 2>/dev/null || true; } | head -n1
+}
+
+patch_bus_invoker() {
+  # The popup's shortcuts click buttons, so they need the popup focused. To run
+  # the same actions from the service worker we need to call command handlers
+  # directly: the handler map is module-scoped, so expose an invoker on
+  # globalThis from inside that module.
+  local file="$1"
+  if [[ -z "$file" ]]; then
+    warn "  command-bus bundle: not found (skipping background shortcuts)"
+    return 0
+  fi
+  if grep -q '__sp_invoke' "$file"; then
+    log "  command bus: invoker already exposed"
+    return 0
+  fi
+  [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
+  # these bundles ship without a trailing newline; the appended block must
+  # start on its own line or it lands on the end of the minified code.
+  printf '\n' >> "$file"
+  cat >> "$file" <<'SP_BUS_EOF'
+// superpatch: expose the command-bus handler map to the rest of the extension.
+// Handlers registered in this context live in the module-scoped map S; this
+// lets the service worker invoke them directly, without a page to send a
+// runtime message from.
+globalThis.__sp_handlers = S;
+globalThis.__sp_invoke = async (key, input) => {
+  const handler = S.get(key);
+  if (!handler) throw Error("superpatch: no handler registered for " + key);
+  return await handler(input);
+};
+SP_BUS_EOF
+  log "  command bus: invoker exposed"
+}
+
+patch_sw_commands() {
+  # chrome.commands handlers in the service worker, calling the same command
+  # handlers the popup's buttons call. Works with the popup closed, and from
+  # whatever tab is focused (HubSpot included).
+  local file="$1"
+  if [[ -z "$file" ]]; then
+    warn "  service-worker bundle: not found (skipping background shortcuts)"
+    return 0
+  fi
+  if grep -q 'superpatch-no-contact' "$file"; then
+    log "  service worker: background shortcuts already installed"
+    return 0
+  fi
+  [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
+  # these bundles ship without a trailing newline; the appended block must
+  # start on its own line or it lands on the end of the minified code.
+  printf '\n' >> "$file"
+  cat >> "$file" <<'SP_CMD_EOF'
+// superpatch: keyboard shortcuts that work with the popup CLOSED.
+//
+// hotkeys.js does its work by clicking buttons in the popup, so its shortcuts
+// only fire when the popup has focus. These run in the service worker and call
+// the same command handlers the popup's buttons call, so nothing has to be
+// open or focused. Set the shortcuts to "Global" at chrome://extensions/shortcuts
+// to use them while another app is in front.
+;(() => {
+  const inv = (key, input) => globalThis.__sp_invoke(key, input);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const log = (...a) => console.log("[superpatch]", ...a);
+  const warn = (...a) => console.warn("[superpatch]", ...a);
+
+  let running = false;
+  const once = async (name, fn) => {
+    if (running) { log("ignored", name, "— another shortcut is still running"); return; }
+    running = true;
+    try { await fn(); } catch (err) { warn(name, "failed:", err); } finally { running = false; }
+  };
+
+  // Hang up if a call is live, wait for it to finalize, then set No Contact.
+  // workspace:disposition-call throws "Call is not completed" until the call
+  // actually reaches that state, hence the poll rather than a fixed delay.
+  async function noContact() {
+    let ws = await inv("workspace:query").catch(() => null);
+    if (!ws || !ws.call) { warn("no call to disposition"); return; }
+    const ref = ws.call.ref;
+
+    if (ws.call.status !== "completed") {
+      try { await inv("workspace:hang-up", { ref }); log("hung up"); }
+      catch (err) { warn("hang-up failed:", err); }
+    }
+
+    let dispositions = [];
+    for (let i = 0; i < 25; i++) {
+      ws = await inv("workspace:query").catch(() => null);
+      if (!ws || !ws.call) { warn("call disappeared before it could be dispositioned"); return; }
+      if (ws.call.status === "completed") {
+        dispositions = ws.availableDispositions || [];
+        if (dispositions.length) break;
+      }
+      await sleep(200);
+    }
+
+    const target = dispositions.find((d) => d && /^no contact$/i.test(String(d.name || "")));
+    if (!target) {
+      warn("no 'No Contact' disposition; available:", dispositions.map((d) => d && d.name));
+      return;
+    }
+    try { await inv("dialer:set-contact-phone-number", null); } catch (_) {}
+    await inv("workspace:disposition-call", { ref, disposition: target });
+    log("No Contact set, popup closed");
+  }
+
+  // Dial whatever number is loaded, picking the country-matched caller ID the
+  // same way the popup's green Call button does.
+  // Read the phone number off the HubSpot page currently in front of you.
+  async function numberFromHubSpot() {
+    let tab;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tab = tabs && tabs[0];
+    } catch (err) {
+      warn("could not read the active tab:", err);
+      return null;
+    }
+    if (!tab || !tab.id) { warn("no active tab"); return null; }
+
+    let host = "";
+    try { host = new URL(tab.url || "").hostname; } catch (_) {}
+    if (!(host === "hubspot.com" || host.endsWith(".hubspot.com"))) {
+      warn("the tab in front isn't HubSpot:", host || tab.url || "unknown");
+      return null;
+    }
+
+    let results;
+    try {
+      results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: () => {
+          // Prefer the "Call with device" icon, then any tagged tel: link,
+          // then any tel: link at all.
+          const el =
+            document.querySelector('a[data-telephony-handler][href^="tel:"][aria-label*="Call" i]') ||
+            document.querySelector('a[data-telephony-handler][href^="tel:"]') ||
+            document.querySelector('a[href^="tel:"]');
+          return el ? decodeURIComponent((el.getAttribute("href") || "").slice(4)) : null;
+        },
+      });
+    } catch (err) {
+      warn("could not read the HubSpot page:", err);
+      return null;
+    }
+
+    const raw = results.map((r) => r && r.result).find(Boolean);
+    if (!raw) { warn("no phone number on this HubSpot page"); return null; }
+
+    const cleaned = raw.replace(/[^\d+]/g, "");
+    const digits = cleaned.replace(/\D/g, "");
+    if (digits.length < 7) { warn("number too short to dial:", raw); return null; }
+    const e164 = cleaned.startsWith("+")
+      ? "+" + digits
+      : digits.length === 10
+        ? "+1" + digits
+        : "+" + digits;
+    log("dialing the number on screen:", e164);
+    return e164;
+  }
+
+  async function placeCall() {
+    const number = await numberFromHubSpot();
+    if (!number) return;
+    try { await inv("dialer:set-contact-phone-number", number); } catch (_) {}
+
+    const ws = await inv("workspace:query").catch(() => null);
+    if (ws && ws.call && ws.call.status !== "completed") {
+      warn("a call is already in progress — not dialing");
+      return;
+    }
+
+    let origins = await inv("dialer:query-call-origins").catch(() => null);
+    if (!Array.isArray(origins)) origins = [];
+    const useUs = number.startsWith("+1") || number.startsWith("+61");
+    const want = useUs ? "US" : "GB";
+    const primary = origins.find((o) => o && o.callerId && o.callerId.countryCode === want);
+    const fallback = origins.find((o) => o && o.callerId && o.callerId.countryCode !== want);
+    const order = [];
+    for (const o of [primary, fallback]) if (o && !order.includes(o)) order.push(o);
+    if (!order.length) {
+      const preferred = await inv("dialer:query-preferred-call-origin").catch(() => null);
+      if (preferred) order.push(preferred);
+      else if (origins.length) order.push(origins[0]);
+    }
+
+    for (const origin of order) {
+      try {
+        await inv("workspace:initiate-outbound-call", {
+          callOrigin: origin,
+          contactPhoneNumber: number,
+        });
+        log("call placed to", number, "via", origin.callerId && origin.callerId.phoneNumber);
+        return;
+      } catch (err) {
+        warn("dial via", origin.callerId && origin.callerId.phoneNumber, "failed:", err);
+      }
+    }
+    warn("could not place the call to", number);
+  }
+
+  chrome.commands.onCommand.addListener((command) => {
+    if (command === "superpatch-no-contact") once(command, noContact);
+    else if (command === "superpatch-call") once(command, placeCall);
+  });
+
+  const DEDUPE_MS = 6000;
+  let lastDial = { number: null, at: 0 };
+  const handlers = globalThis.__sp_handlers;
+  if (handlers && typeof handlers.get === "function") {
+    const key = "workspace:initiate-outbound-call";
+    const original = handlers.get(key);
+    if (original && !original.__spDeduped) {
+      const wrapped = async (input) => {
+        const number = input && input.contactPhoneNumber;
+        const now = Date.now();
+        if (number && number === lastDial.number && now - lastDial.at < DEDUPE_MS) {
+          warn("ignored a duplicate call to", number, "(within", DEDUPE_MS + "ms)");
+          return;
+        }
+        lastDial = { number, at: now };
+        try {
+          return await original(input);
+        } catch (err) {
+          lastDial = { number: null, at: 0 };
+          throw err;
+        }
+      };
+      wrapped.__spDeduped = true;
+      handlers.set(key, wrapped);
+      log("duplicate-call guard active (" + DEDUPE_MS + "ms)");
+    }
+  } else {
+    warn("handler map not exposed — duplicate-call guard NOT active");
+  }
+
+  log("background shortcuts ready (work with the popup closed)");
+})();
+SP_CMD_EOF
+  log "  service worker: background shortcuts installed"
+}
+
+patch_manifest_bg_commands() {
+  # Declare the two commands. Chrome only accepts ONE primary modifier plus
+  # Shift in a manifest suggested_key, so Ctrl+Option+X can't be declared here
+  # — rebind by hand at chrome://extensions/shortcuts if you want it, and set
+  # the scope to Global to use the keys while another app is in front.
+  local manifest="$1"
+  if grep -q 'superpatch-no-contact' "$manifest"; then
+    log "  manifest: background shortcut keys already present"
+    return 0
+  fi
+  [[ -f "$manifest.superpatch.bak" ]] || cp "$manifest" "$manifest.superpatch.bak"
+
+  perl -i -0777 -pe '
+    s#(   "commands": \{\n      )("_execute_action")#$1"superpatch-no-contact": \{\n         "description": "No Contact: hang up and set the No Contact disposition",\n         "suggested_key": \{\n            "default": "Ctrl+Shift+X",\n            "mac": "MacCtrl+Shift+X"\n         \}\n      \},\n      "superpatch-call": \{\n         "description": "Call the number on the HubSpot page in front of you",\n         "suggested_key": \{\n            "default": "Ctrl+Shift+C",\n            "mac": "MacCtrl+Shift+C"\n         \}\n      \},\n      $2#
+  ' "$manifest"
+
+  if grep -q 'superpatch-no-contact' "$manifest"; then
+    log "  manifest: background shortcut keys added (Ctrl+Shift+X / Ctrl+Shift+C)"
+  else
+    warn "  ERROR: commands block not found in $manifest — restoring backup"
+    mv "$manifest.superpatch.bak" "$manifest"
+    return 1
+  fi
+}
+
+revert_bus() {
+  local file="$1"
+  if [[ -n "$file" ]] && [[ -f "$file.superpatch.bak" ]]; then
+    mv "$file.superpatch.bak" "$file"
+    log "  command-bus bundle reverted"
   fi
 }
 
@@ -1413,7 +2011,7 @@ patch_sw_tabfilter() {
   [[ -f "$file.superpatch.bak" ]] || cp "$file" "$file.superpatch.bak"
 
   perl -i -0777 -pe '
-    s#\Qfor(let n of await ae())\E#for(let n of (await ae()).filter(__t=>{try{let __h=new URL(__t.url||"").hostname;return __h==="hubspot.com"||__h.endsWith(".hubspot.com")}catch(_){return false}}))#
+    s#\Qfor(let n of await ae())\E#for(let n of (await ae()).filter(__t=>false))#
   ' "$file"
 
   if grep -q '__t\.url' "$file"; then
@@ -1447,11 +2045,11 @@ patch_manifest_command() {
   [[ -f "$manifest.superpatch.bak" ]] || cp "$manifest" "$manifest.superpatch.bak"
 
   perl -i -0777 -pe '
-    s#(   "content_scripts": \[)#   "commands": {\n      "_execute_action": {\n         "suggested_key": {\n            "default": "Ctrl+Shift+D",\n            "mac": "MacCtrl+Alt+D"\n         }\n      }\n   },\n$1#
+    s#(   "content_scripts": \[)#   "commands": {\n      "_execute_action": {\n         "suggested_key": {\n            "default": "Ctrl+Shift+D",\n            "mac": "MacCtrl+Shift+D"\n         }\n      }\n   },\n$1#
   ' "$manifest"
 
   if grep -q '_execute_action' "$manifest"; then
-    log "  manifest: popup shortcut added (Ctrl+Option+D on macOS)"
+    log "  manifest: popup shortcut added (Ctrl+Shift+D on macOS)"
   else
     warn "  ERROR: content_scripts key not found in $manifest — restoring backup"
     mv "$manifest.superpatch.bak" "$manifest"
@@ -1540,12 +2138,13 @@ main() {
     is_dialer "$manifest" || continue
 
     hits=$((hits + 1))
-    local ext_dir bundle html offscreen sw
+    local ext_dir bundle html offscreen sw bus
     ext_dir="$(dirname "$manifest")"
     bundle="$(find_interceptor_bundle "$ext_dir")"
     html="$(find_popup_html "$ext_dir")"
     offscreen="$(find_offscreen_bundle "$ext_dir")"
     sw="$(find_sw_bundle "$ext_dir")"
+    bus="$(find_commandbus_bundle "$ext_dir")"
 
     log "Dialer.io: $ext_dir"
 
@@ -1571,8 +2170,13 @@ main() {
         patch_manifest_matches     "$manifest" || failed=$((failed + 1))
         patch_manifest_command     "$manifest" || failed=$((failed + 1))
         patch_sw_tabfilter         "$sw"      || failed=$((failed + 1))
+        patch_bus_invoker          "$bus"     || failed=$((failed + 1))
+        patch_sw_commands          "$sw"      || failed=$((failed + 1))
+        patch_manifest_bg_commands "$manifest" || failed=$((failed + 1))
         patch_interceptor_autodial "$bundle"  || failed=$((failed + 1))
         patch_interceptor_hotkey   "$bundle"  || failed=$((failed + 1))
+        patch_interceptor_hslog    "$bundle"  || failed=$((failed + 1))
+        patch_sw_hslog             "$sw"      || failed=$((failed + 1))
         patch_offscreen_silence    "$offscreen" || failed=$((failed + 1))
         done=$((done + 1))
         ;;
@@ -1582,6 +2186,7 @@ main() {
         [[ -n "$bundle"   ]] && revert_interceptor  "$bundle"
         [[ -n "$offscreen" ]] && revert_offscreen   "$offscreen"
         [[ -n "$sw"       ]] && revert_sw           "$sw"
+        [[ -n "$bus"      ]] && revert_bus          "$bus"
         revert_manifest   "$manifest"
         revert_hotkeys_js "$ext_dir"
         done=$((done + 1))
