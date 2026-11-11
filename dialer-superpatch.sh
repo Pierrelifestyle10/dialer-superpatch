@@ -1514,6 +1514,10 @@ patch_interceptor_hslog() {
       const e = r.engagement || {};
       if (e.type !== "CALL") return false;
       if (String(e.id) === String(placeholderId)) return false;
+      // Every placeholder has to ignore every other placeholder, not just
+      // itself: dial twice in quick succession and each one would otherwise
+      // read the other as Dialer's record and delete itself.
+      if (String((r.metadata || {}).body || "").indexOf(MARKER) >= 0) return false;
       return Number(e.timestamp || 0) >= since - 120000;
     });
     return { ok: true, landed };
